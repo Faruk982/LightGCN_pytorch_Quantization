@@ -52,7 +52,7 @@ finally:
         w.close()
     
     # Save performance metrics to JSON file
-    metrics_filename = f"metrics_{'quantized' if world.config.get('quantization', False) else 'original'}.json"
+    Procedure.save_metrics()
     with open(metrics_filename, 'w') as f:
         json.dump(Procedure.EPOCH_METRICS, f, indent=2)
     print(f"\nPerformance metrics saved to {metrics_filename}")

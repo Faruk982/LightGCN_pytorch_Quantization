@@ -30,7 +30,11 @@ EPOCH_METRICS = {
     'sample_times': [],
     'batch_times': [],
     'memory_usage': [],
-    'cpu_usage': []
+    'cpu_usage': [],
+    'recall': [],
+    'precision': [],
+    'ndcg': [],
+    'losses': []
 }
 
 
@@ -98,6 +102,7 @@ def BPR_train_original(dataset, recommend_model, loss_class, epoch, neg_k=1, w=N
     EPOCH_METRICS['batch_times'].append(avg_batch_time)
     EPOCH_METRICS['memory_usage'].append(mem_after)
     EPOCH_METRICS['cpu_usage'].append(cpu_avg)
+    EPOCH_METRICS['losses'].append(float(aver_loss))
     
     # Log to tensorboard
     if world.tensorboard:
@@ -197,6 +202,12 @@ def Test(dataset, Recmodel, epoch, w=None, multicore=0):
         results['recall'] /= float(len(users))
         results['precision'] /= float(len(users))
         results['ndcg'] /= float(len(users))
+        
+        # Store accuracy metrics
+        EPOCH_METRICS['recall'].append(results['recall'].tolist())
+        EPOCH_METRICS['precision'].append(results['precision'].tolist())
+        EPOCH_METRICS['ndcg'].append(results['ndcg'].tolist())
+        
         # results['auc'] = np.mean(auc_record)
         if world.tensorboard:
             w.add_scalars(f'Test/Recall@{world.topks}',
@@ -209,3 +220,51 @@ def Test(dataset, Recmodel, epoch, w=None, multicore=0):
             pool.close()
         print(results)
         return results
+
+
+def save_metrics(filename='metrics.json'):
+    """Save collected metrics to JSON file for comparison"""
+    import json
+    quantized = world.config.get('quantization', False)
+    
+    # Add configuration info
+    metrics_to_save = {
+        'config': {
+            'quantization': quantized,
+            'quant_bits': world.config.get('quant_bits', 8) if quantized else None,
+            'model': world.model_name,
+            'dataset': world.dataset,
+            'topks': world.topks
+        },
+        'metrics': EPOCH_METRICS
+    }
+    
+    # Save with appropriate filename
+    if quantized:
+        filename = 'metrics_quantized.json'
+    else:
+        filename = 'metrics_original.json'
+    
+    with open(filename, 'w') as f:
+        json.dump(metrics_to_save, f, indent=2)
+    
+    print(f"\n{'='*50}")
+    print(f"Metrics saved to: {filename}")
+    print(f"{'='*50}")
+    
+    # Print summary
+    if EPOCH_METRICS['epoch_times']:
+        print(f"\nTraining Summary:")
+        print(f"  Mode: {'8-bit Quantized' if quantized else 'Float32 Original'}")
+        print(f"  Avg Epoch Time: {np.mean(EPOCH_METRICS['epoch_times']):.2f}s")
+        print(f"  Avg Batch Time: {np.mean(EPOCH_METRICS['batch_times']):.4f}s")
+        print(f"  Avg Memory: {np.mean(EPOCH_METRICS['memory_usage']):.1f}MB")
+        print(f"  Avg CPU: {np.mean(EPOCH_METRICS['cpu_usage']):.1f}%")
+        
+        if EPOCH_METRICS['recall']:
+            last_recall = EPOCH_METRICS['recall'][-1]
+            last_ndcg = EPOCH_METRICS['ndcg'][-1]
+            print(f"\n  Final Recall@{world.topks}: {last_recall}")
+            print(f"  Final NDCG@{world.topks}: {last_ndcg}")
+        
+        print(f"{'='*50}\n")
