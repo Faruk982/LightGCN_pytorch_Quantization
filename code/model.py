@@ -169,6 +169,13 @@ class LightGCN(BasicModel):
         #print(embs.size())
         light_out = torch.mean(embs, dim=1)
         users, items = torch.split(light_out, [self.num_users, self.num_items])
+        
+        # Apply quantization if enabled
+        if self.config.get('quantization', False):
+            import utils
+            users, _, _ = utils.quantize_embeddings(users, self.config.get('quant_bits', 8))
+            items, _, _ = utils.quantize_embeddings(items, self.config.get('quant_bits', 8))
+        
         return users, items
     
     def getUsersRating(self, users):

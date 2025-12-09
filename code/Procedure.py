@@ -18,9 +18,20 @@ from tqdm import tqdm
 import model
 import multiprocessing
 from sklearn.metrics import roc_auc_score
+import psutil
+import os
 
 
 CORES = multiprocessing.cpu_count() // 2
+
+# Global metrics tracking
+EPOCH_METRICS = {
+    'epoch_times': [],
+    'sample_times': [],
+    'batch_times': [],
+    'memory_usage': [],
+    'cpu_usage': []
+}
 
 
 def BPR_train_original(dataset, recommend_model, loss_class, epoch, neg_k=1, w=None):
@@ -28,8 +39,20 @@ def BPR_train_original(dataset, recommend_model, loss_class, epoch, neg_k=1, w=N
     Recmodel.train()
     bpr: utils.BPRLoss = loss_class
     
+    # Track epoch start time
+    epoch_start = time()
+    
+    # Get initial CPU and memory usage
+    process = psutil.Process(os.getpid())
+    mem_before = process.memory_info().rss / 1024 / 1024  # MB
+    cpu_before = process.cpu_percent(interval=0.1)
+    
     with timer(name="Sample"):
-        S = utils.DynamicSample_hard(dataset, Recmodel, num_candidates=10)
+        sample_start = time()
+        S = utils.UniformSample_original(dataset)
+        sample_time = time() - sample_start
+        EPOCH_METRICS['sample_times'].append(sample_time)
+        
     users = torch.Tensor(S[:, 0]).long()
     posItems = torch.Tensor(S[:, 1]).long()
     negItems = torch.Tensor(S[:, 2]).long()
@@ -40,6 +63,9 @@ def BPR_train_original(dataset, recommend_model, loss_class, epoch, neg_k=1, w=N
     users, posItems, negItems = utils.shuffle(users, posItems, negItems)
     total_batch = len(users) // world.config['bpr_batch_size'] + 1
     aver_loss = 0.
+    
+    # Track batch timing for energy efficiency
+    batch_times = []
     for (batch_i,
          (batch_users,
           batch_pos,
@@ -47,14 +73,46 @@ def BPR_train_original(dataset, recommend_model, loss_class, epoch, neg_k=1, w=N
                                                    posItems,
                                                    negItems,
                                                    batch_size=world.config['bpr_batch_size'])):
+        batch_start = time()
         cri = bpr.stageOne(batch_users, batch_pos, batch_neg)
+        batch_time = time() - batch_start
+        batch_times.append(batch_time)
         aver_loss += cri
         if world.tensorboard:
             w.add_scalar(f'BPRLoss/BPR', cri, epoch * int(len(users) / world.config['bpr_batch_size']) + batch_i)
+            w.add_scalar(f'Performance/batch_time', batch_time, epoch * int(len(users) / world.config['bpr_batch_size']) + batch_i)
+    
+    # Calculate metrics
     aver_loss = aver_loss / total_batch
+    avg_batch_time = np.mean(batch_times) if batch_times else 0
+    total_epoch_time = time() - epoch_start
+    
+    # Get final CPU and memory usage
+    mem_after = process.memory_info().rss / 1024 / 1024  # MB
+    cpu_after = process.cpu_percent(interval=0.1)
+    mem_used = mem_after - mem_before
+    cpu_avg = (cpu_before + cpu_after) / 2
+    
+    # Store metrics
+    EPOCH_METRICS['epoch_times'].append(total_epoch_time)
+    EPOCH_METRICS['batch_times'].append(avg_batch_time)
+    EPOCH_METRICS['memory_usage'].append(mem_after)
+    EPOCH_METRICS['cpu_usage'].append(cpu_avg)
+    
+    # Log to tensorboard
+    if world.tensorboard:
+        w.add_scalar(f'Performance/epoch_time', total_epoch_time, epoch)
+        w.add_scalar(f'Performance/sample_time', sample_time, epoch)
+        w.add_scalar(f'Performance/avg_batch_time', avg_batch_time, epoch)
+        w.add_scalar(f'Performance/memory_MB', mem_after, epoch)
+        w.add_scalar(f'Performance/cpu_percent', cpu_avg, epoch)
+    
     time_info = timer.dict()
     timer.zero()
-    return f"loss{aver_loss:.3f}-{time_info}"
+    
+    quant_info = "QUANT" if world.config.get('quantization', False) else "FLOAT"
+    return f"loss{aver_loss:.3f}-{time_info}-batch:{avg_batch_time:.4f}s-epoch:{total_epoch_time:.2f}s-mem:{mem_after:.1f}MB-cpu:{cpu_avg:.1f}%-{quant_info}"
+
     
     
 def test_one_batch(X):
