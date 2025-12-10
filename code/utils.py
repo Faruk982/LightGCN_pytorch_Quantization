@@ -98,60 +98,67 @@ def UniformSample_original_python(dataset):
 # ===================end samplers==========================
 # =====================utils====================================
 
-def quantize_embeddings(embeddings, num_bits=8):
+def dyadic_quantize(embeddings, num_bits=8):
     """
-    Quantize embeddings to integer representation for faster computation
+    Dyadic quantization using power-of-2 scaling (bit-shifting)
+    Based on I-ViT paper approach for integer-only arithmetic
     
     Args:
         embeddings: torch tensor of embeddings
-        num_bits: number of bits for quantization (default 8-bit)
+        num_bits: number of bits for quantization
     
     Returns:
-        quantized embeddings (as float but computed via integers)
-        scale factor for dequantization
-        zero_point for dequantization
+        Integer quantized embeddings (INT format)
+        Scaling factor as power of 2 (for bit-shifting)
     """
-    # Calculate quantization parameters
-    qmin = 0
-    qmax = 2 ** num_bits - 1
+    # Find range
+    abs_max = torch.max(torch.abs(embeddings))
     
-    min_val = embeddings.min()
-    max_val = embeddings.max()
+    # Calculate dyadic (power-of-2) scaling factor
+    # This allows division/multiplication to be replaced with bit-shifting
+    qmax = 2 ** (num_bits - 1) - 1  # Signed integer range
     
-    # Avoid division by zero
-    scale = (max_val - min_val) / (qmax - qmin)
-    if scale == 0:
-        scale = 1.0
+    # Find the power of 2 scale: 2^b where b = ceil(log2(abs_max/qmax))
+    if abs_max > 0:
+        scale_bits = torch.ceil(torch.log2(abs_max / qmax)).int().item()
+        scale_bits = max(0, scale_bits)  # Ensure non-negative
+    else:
+        scale_bits = 0
     
-    zero_point = qmin - min_val / scale
+    # Quantize: Q = round(X / 2^b) where 2^b is the dyadic scale
+    # This is equivalent to: Q = round(X >> b) in integer arithmetic
+    if scale_bits > 0:
+        quant_emb = torch.round(embeddings / (2 ** scale_bits))
+    else:
+        quant_emb = torch.round(embeddings)
     
-    # Quantize
-    q_embeddings = torch.clamp(torch.round(embeddings / scale + zero_point), qmin, qmax)
+    # Clamp to integer range
+    quant_emb = torch.clamp(quant_emb, -qmax, qmax)
     
-    # Dequantize back to float (but computation was done in integers)
-    dequantized = (q_embeddings - zero_point) * scale
-    
-    return dequantized, scale, zero_point
+    return quant_emb, scale_bits
 
-def quantized_matmul(x, y, num_bits=8):
+
+def dyadic_matmul(x, y, x_scale_bits, y_scale_bits, num_bits=8):
     """
-    Perform matrix multiplication with quantized values for efficiency
+    Integer-only matrix multiplication using dyadic arithmetic (bit-shifting)
+    Following I-ViT paper's approach
     
     Args:
-        x, y: input tensors
-        num_bits: quantization bits
+        x, y: Quantized integer tensors
+        x_scale_bits, y_scale_bits: Power-of-2 scale bits for each tensor
+        num_bits: Bit precision
     
     Returns:
-        result of matmul using quantized arithmetic
+        Result with combined scale
+        Combined scale bits
     """
-    # Quantize both inputs
-    x_q, x_scale, x_zero = quantize_embeddings(x, num_bits)
-    y_q, y_scale, y_zero = quantize_embeddings(y, num_bits)
+    # Integer matmul
+    result = torch.matmul(x, y.t() if len(y.shape) > 1 else y)
     
-    # Perform computation (internally uses integer-like precision)
-    result = torch.matmul(x_q, y_q.t() if len(y_q.shape) > 1 else y_q)
+    # Combined scale: 2^(x_scale + y_scale)
+    combined_scale_bits = x_scale_bits + y_scale_bits
     
-    return result
+    return result, combined_scale_bits
 
 def set_seed(seed):
     np.random.seed(seed)

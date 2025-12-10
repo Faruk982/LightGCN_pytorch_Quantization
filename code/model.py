@@ -170,11 +170,28 @@ class LightGCN(BasicModel):
         light_out = torch.mean(embs, dim=1)
         users, items = torch.split(light_out, [self.num_users, self.num_items])
         
-        # Apply quantization if enabled
+        # Apply dyadic quantization if enabled (integer-only arithmetic)
         if self.config.get('quantization', False):
             import utils
-            users, _, _ = utils.quantize_embeddings(users, self.config.get('quant_bits', 8))
-            items, _, _ = utils.quantize_embeddings(items, self.config.get('quant_bits', 8))
+            # Store original for backprop gradient flow
+            users_orig, items_orig = users, items
+            
+            # Quantize using dyadic (power-of-2) scaling
+            users_q, user_scale_bits = utils.dyadic_quantize(users, self.config.get('quant_bits', 8))
+            items_q, item_scale_bits = utils.dyadic_quantize(items, self.config.get('quant_bits', 8))
+            
+            # Dequantize for gradient flow (but forward uses quantized values)
+            if self.training:
+                # During training: use quantized forward, but dequantize for gradients
+                users = users_q * (2 ** user_scale_bits)
+                items = items_q * (2 ** item_scale_bits)
+                # Straight-through estimator for gradients
+                users = users + (users_orig - users).detach()
+                items = items + (items_orig - items).detach()
+            else:
+                # During inference: use pure integer arithmetic
+                users = users_q * (2 ** user_scale_bits)
+                items = items_q * (2 ** item_scale_bits)
         
         return users, items
     
