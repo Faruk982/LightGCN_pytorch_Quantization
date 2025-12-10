@@ -53,19 +53,3 @@ finally:
     
     # Save performance metrics to JSON file
     Procedure.save_metrics()
-    with open(metrics_filename, 'w') as f:
-        json.dump(Procedure.EPOCH_METRICS, f, indent=2)
-    print(f"\nPerformance metrics saved to {metrics_filename}")
-    
-    # Print summary statistics
-    if Procedure.EPOCH_METRICS['epoch_times']:
-        print("\n" + "="*50)
-        print("TRAINING SUMMARY")
-        print("="*50)
-        print(f"Mode: {'QUANTIZED (8-bit)' if world.config.get('quantization', False) else 'ORIGINAL (Float32)'}")
-        print(f"Average Epoch Time: {np.mean(Procedure.EPOCH_METRICS['epoch_times']):.3f}s")
-        print(f"Average Sample Time: {np.mean(Procedure.EPOCH_METRICS['sample_times']):.3f}s")
-        print(f"Average Batch Time: {np.mean(Procedure.EPOCH_METRICS['batch_times']):.4f}s")
-        print(f"Average Memory Usage: {np.mean(Procedure.EPOCH_METRICS['memory_usage']):.1f} MB")
-        print(f"Average CPU Usage: {np.mean(Procedure.EPOCH_METRICS['cpu_usage']):.1f}%")
-        print("="*50)
