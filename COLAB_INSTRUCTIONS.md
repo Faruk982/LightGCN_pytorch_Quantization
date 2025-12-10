@@ -1,4 +1,120 @@
-# 🚀 Google Colab Quick Start Guide
+# 🚀 Google Colab - Simple Run Instructions
+
+## Quick Start (Copy-Paste into Colab)
+
+```python
+# ===== STEP 1: Setup =====
+!git clone https://github.com/Faruk982/LightGCN_pytorch_Quantization.git
+%cd LightGCN_pytorch_Quantization
+!pip install -q torch scikit-learn tensorboardX psutil pandas
+
+# ===== STEP 2: Run ORIGINAL Version (Float32) =====
+print("\n" + "="*60)
+print("RUNNING ORIGINAL (Float32)")
+print("="*60)
+!git checkout original-code
+!python code/main.py --dataset=gowalla --model=lgn --epochs=5 --bpr_batch=2048
+
+# ===== STEP 3: Run QUANTIZED Version (8-bit) =====
+print("\n" + "="*60)
+print("RUNNING QUANTIZED (8-bit)")
+print("="*60)
+!git checkout quantized-version
+!python code/main.py --dataset=gowalla --model=lgn --epochs=5 --bpr_batch=2048
+
+print("\n✅ DONE! Check the output above to compare:")
+print("  - Accuracy: Recall@20, Precision@20, NDCG@20")
+print("  - Speed: epoch time, batch time")
+print("  - Resources: memory, CPU usage")
+```
+
+## What You'll See
+
+### During Training:
+```
+EPOCH[1/5] loss0.234-|Sample:2.1s|-batch:0.0123s-epoch:45.67s-mem:1024MB-cpu:67.3%-FLOAT
+```
+
+### At the End:
+```
+============================================================
+FINAL SUMMARY - ORIGINAL MODE
+============================================================
+Avg Epoch Time:  45.32s
+Avg Batch Time:  0.0125s
+Avg Memory:      1024.5 MB
+Avg CPU:         67.2%
+============================================================
+```
+
+### Test Results (Every 10 Epochs):
+```
+[Recall@20:0.015234|Precision@20:0.012456|NDCG@20:0.023456]
+```
+
+## Datasets by Speed
+
+| Dataset | Items | Users | Time/Epoch | Recommended Epochs |
+|---------|-------|-------|------------|-------------------|
+| **gowalla** | 29K | 29K | ~1-2 min | 5-10 ⚡ Best for quick test |
+| **yelp2018** | 45K | 31K | ~3-5 min | 10-20 |
+| **amazon-book** | 59K | 52K | ~8-10 min | 20+ |
+
+## Advanced: Faster Test
+
+For ultra-quick test (~5 minutes total):
+
+```python
+# Both versions with 3 epochs
+!git checkout original-code
+!python code/main.py --dataset=gowalla --epochs=3 --bpr_batch=4096
+
+!git checkout quantized-version
+!python code/main.py --dataset=gowalla --epochs=3 --bpr_batch=4096
+```
+
+## Compare Results
+
+Look for these in the output:
+
+**Speed Comparison:**
+- `epoch:XX.XXs` - How long each epoch takes
+- `batch:X.XXXXs` - How long each batch takes
+- **Quantized should be 2-3x faster!** ⚡
+
+**Accuracy Comparison:**
+- `Recall@20` - Higher is better
+- `NDCG@20` - Higher is better
+- **Quantized should be ~98-99% of original** 📊
+
+**Resource Usage:**
+- `mem:XXXmb` - Memory usage
+- `cpu:XX%` - CPU utilization
+- **Quantized should use less memory** 💾
+
+## Troubleshooting
+
+**Out of Memory?**
+```python
+# Reduce batch size
+--bpr_batch=1024
+```
+
+**Dataset not found?**
+```python
+# Use gowalla (most reliable)
+--dataset=gowalla
+```
+
+**Want to see only final results?**
+```python
+# Reduce output, just run and compare the FINAL SUMMARY sections
+```
+
+---
+
+**That's it! 🎉** Just copy-paste the code above and run in Colab. You'll see both versions train and can compare speed vs accuracy directly from the console output!
+
 
 ## Step 1: Setup Environment
 
