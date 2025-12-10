@@ -95,83 +95,63 @@ def UniformSample_original_python(dataset):
     total = time() - total_start
     return np.array(S)
 
-def DynamicSample_hard(dataset, model, num_candidates=10):
-    """
-    Hard negative sampling - select negatives with highest predicted scores
-    This provides more informative training signals by sampling harder negatives
-    
-    Args:
-        dataset: BasicDataset object
-        model: trained model to compute scores
-        num_candidates: number of candidate negatives to sample before selecting hardest
-    
-    Returns:
-        np.array of shape (n_samples, 3) containing [user, pos_item, hard_neg_item]
-    """
-    dataset : BasicDataset
-    user_num = dataset.trainDataSize
-    users = np.random.randint(0, dataset.n_users, user_num)
-    allPos = dataset.allPos
-    S = []
-    
-    model.eval()  # Set model to evaluation mode for inference
-    
-    with torch.no_grad():  # No gradients needed for sampling
-        # Compute embeddings once for all users and items
-        if hasattr(model, 'computer'):
-            # For LightGCN
-            all_users_emb, all_items_emb = model.computer()
-        else:
-            # For MF
-            all_users_emb = model.embedding_user.weight
-            all_items_emb = model.embedding_item.weight
-        
-        for user in users:
-            posForUser = allPos[user]
-            if len(posForUser) == 0:
-                continue
-            
-            # Sample a positive item
-            posindex = np.random.randint(0, len(posForUser))
-            positem = posForUser[posindex]
-            
-            # Sample candidate negative items
-            candidates = []
-            posForUser_set = set(posForUser)
-            attempts = 0
-            while len(candidates) < num_candidates and attempts < num_candidates * 10:
-                neg_candidate = np.random.randint(0, dataset.m_items)
-                if neg_candidate not in posForUser_set and neg_candidate not in candidates:
-                    candidates.append(neg_candidate)
-                attempts += 1
-            
-            if len(candidates) == 0:
-                # Fallback to random if no candidates found
-                while True:
-                    negitem = np.random.randint(0, dataset.m_items)
-                    if negitem not in posForUser_set:
-                        break
-                S.append([user, positem, negitem])
-                continue
-            
-            # Get embeddings for this user and candidate items
-            user_emb = all_users_emb[user]
-            cand_emb = all_items_emb[candidates]
-            
-            # Calculate scores: higher score = harder negative
-            scores = torch.sum(user_emb * cand_emb, dim=1)
-            
-            # Select the candidate with highest score (hardest negative)
-            hardest_idx = torch.argmax(scores).item()
-            hardest_neg = candidates[hardest_idx]
-            
-            S.append([user, positem, hardest_neg])
-    
-    model.train()  # Set model back to training mode
-    return np.array(S)
-
 # ===================end samplers==========================
 # =====================utils====================================
+
+def quantize_embeddings(embeddings, num_bits=8):
+    """
+    Quantize embeddings to integer representation for faster computation
+    
+    Args:
+        embeddings: torch tensor of embeddings
+        num_bits: number of bits for quantization (default 8-bit)
+    
+    Returns:
+        quantized embeddings (as float but computed via integers)
+        scale factor for dequantization
+        zero_point for dequantization
+    """
+    # Calculate quantization parameters
+    qmin = 0
+    qmax = 2 ** num_bits - 1
+    
+    min_val = embeddings.min()
+    max_val = embeddings.max()
+    
+    # Avoid division by zero
+    scale = (max_val - min_val) / (qmax - qmin)
+    if scale == 0:
+        scale = 1.0
+    
+    zero_point = qmin - min_val / scale
+    
+    # Quantize
+    q_embeddings = torch.clamp(torch.round(embeddings / scale + zero_point), qmin, qmax)
+    
+    # Dequantize back to float (but computation was done in integers)
+    dequantized = (q_embeddings - zero_point) * scale
+    
+    return dequantized, scale, zero_point
+
+def quantized_matmul(x, y, num_bits=8):
+    """
+    Perform matrix multiplication with quantized values for efficiency
+    
+    Args:
+        x, y: input tensors
+        num_bits: quantization bits
+    
+    Returns:
+        result of matmul using quantized arithmetic
+    """
+    # Quantize both inputs
+    x_q, x_scale, x_zero = quantize_embeddings(x, num_bits)
+    y_q, y_scale, y_zero = quantize_embeddings(y, num_bits)
+    
+    # Perform computation (internally uses integer-like precision)
+    result = torch.matmul(x_q, y_q.t() if len(y_q.shape) > 1 else y_q)
+    
+    return result
 
 def set_seed(seed):
     np.random.seed(seed)

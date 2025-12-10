@@ -46,6 +46,8 @@ config['decay'] = args.decay
 config['pretrain'] = args.pretrain
 config['A_split'] = False
 config['bigdata'] = False
+config['quantization'] = False  # Disabled on original-code branch (baseline)
+config['quant_bits'] = 8  # Number of bits for quantization (8-bit default)
 
 GPU = torch.cuda.is_available()
 device = torch.device('cuda' if GPU else "cpu")

@@ -18,9 +18,24 @@ from tqdm import tqdm
 import model
 import multiprocessing
 from sklearn.metrics import roc_auc_score
+import psutil
+import os
 
 
 CORES = multiprocessing.cpu_count() // 2
+
+# Global metrics tracking
+EPOCH_METRICS = {
+    'epoch_times': [],
+    'sample_times': [],
+    'batch_times': [],
+    'memory_usage': [],
+    'cpu_usage': [],
+    'recall': [],
+    'precision': [],
+    'ndcg': [],
+    'losses': []
+}
 
 
 def BPR_train_original(dataset, recommend_model, loss_class, epoch, neg_k=1, w=None):
@@ -28,8 +43,20 @@ def BPR_train_original(dataset, recommend_model, loss_class, epoch, neg_k=1, w=N
     Recmodel.train()
     bpr: utils.BPRLoss = loss_class
     
+    # Track epoch start time
+    epoch_start = time()
+    
+    # Get initial CPU and memory usage
+    process = psutil.Process(os.getpid())
+    mem_before = process.memory_info().rss / 1024 / 1024  # MB
+    cpu_before = process.cpu_percent(interval=0.1)
+    
     with timer(name="Sample"):
-        S = utils.DynamicSample_hard(dataset, Recmodel, num_candidates=10)
+        sample_start = time()
+        S = utils.UniformSample_original(dataset)
+        sample_time = time() - sample_start
+        EPOCH_METRICS['sample_times'].append(sample_time)
+        
     users = torch.Tensor(S[:, 0]).long()
     posItems = torch.Tensor(S[:, 1]).long()
     negItems = torch.Tensor(S[:, 2]).long()
@@ -40,6 +67,9 @@ def BPR_train_original(dataset, recommend_model, loss_class, epoch, neg_k=1, w=N
     users, posItems, negItems = utils.shuffle(users, posItems, negItems)
     total_batch = len(users) // world.config['bpr_batch_size'] + 1
     aver_loss = 0.
+    
+    # Track batch timing for energy efficiency
+    batch_times = []
     for (batch_i,
          (batch_users,
           batch_pos,
@@ -47,14 +77,47 @@ def BPR_train_original(dataset, recommend_model, loss_class, epoch, neg_k=1, w=N
                                                    posItems,
                                                    negItems,
                                                    batch_size=world.config['bpr_batch_size'])):
+        batch_start = time()
         cri = bpr.stageOne(batch_users, batch_pos, batch_neg)
+        batch_time = time() - batch_start
+        batch_times.append(batch_time)
         aver_loss += cri
         if world.tensorboard:
             w.add_scalar(f'BPRLoss/BPR', cri, epoch * int(len(users) / world.config['bpr_batch_size']) + batch_i)
+            w.add_scalar(f'Performance/batch_time', batch_time, epoch * int(len(users) / world.config['bpr_batch_size']) + batch_i)
+    
+    # Calculate metrics
     aver_loss = aver_loss / total_batch
+    avg_batch_time = np.mean(batch_times) if batch_times else 0
+    total_epoch_time = time() - epoch_start
+    
+    # Get final CPU and memory usage
+    mem_after = process.memory_info().rss / 1024 / 1024  # MB
+    cpu_after = process.cpu_percent(interval=0.1)
+    mem_used = mem_after - mem_before
+    cpu_avg = (cpu_before + cpu_after) / 2
+    
+    # Store metrics
+    EPOCH_METRICS['epoch_times'].append(total_epoch_time)
+    EPOCH_METRICS['batch_times'].append(avg_batch_time)
+    EPOCH_METRICS['memory_usage'].append(mem_after)
+    EPOCH_METRICS['cpu_usage'].append(cpu_avg)
+    EPOCH_METRICS['losses'].append(float(aver_loss))
+    
+    # Log to tensorboard
+    if world.tensorboard:
+        w.add_scalar(f'Performance/epoch_time', total_epoch_time, epoch)
+        w.add_scalar(f'Performance/sample_time', sample_time, epoch)
+        w.add_scalar(f'Performance/avg_batch_time', avg_batch_time, epoch)
+        w.add_scalar(f'Performance/memory_MB', mem_after, epoch)
+        w.add_scalar(f'Performance/cpu_percent', cpu_avg, epoch)
+    
     time_info = timer.dict()
     timer.zero()
-    return f"loss{aver_loss:.3f}-{time_info}"
+    
+    quant_info = "QUANT" if world.config.get('quantization', False) else "FLOAT"
+    return f"loss{aver_loss:.3f}-{time_info}-batch:{avg_batch_time:.4f}s-epoch:{total_epoch_time:.2f}s-mem:{mem_after:.1f}MB-cpu:{cpu_avg:.1f}%-{quant_info}"
+
     
     
 def test_one_batch(X):
@@ -139,6 +202,12 @@ def Test(dataset, Recmodel, epoch, w=None, multicore=0):
         results['recall'] /= float(len(users))
         results['precision'] /= float(len(users))
         results['ndcg'] /= float(len(users))
+        
+        # Store accuracy metrics
+        EPOCH_METRICS['recall'].append(results['recall'].tolist())
+        EPOCH_METRICS['precision'].append(results['precision'].tolist())
+        EPOCH_METRICS['ndcg'].append(results['ndcg'].tolist())
+        
         # results['auc'] = np.mean(auc_record)
         if world.tensorboard:
             w.add_scalars(f'Test/Recall@{world.topks}',
@@ -151,3 +220,51 @@ def Test(dataset, Recmodel, epoch, w=None, multicore=0):
             pool.close()
         print(results)
         return results
+
+
+def save_metrics(filename='metrics.json'):
+    """Save collected metrics to JSON file for comparison"""
+    import json
+    quantized = world.config.get('quantization', False)
+    
+    # Add configuration info
+    metrics_to_save = {
+        'config': {
+            'quantization': quantized,
+            'quant_bits': world.config.get('quant_bits', 8) if quantized else None,
+            'model': world.model_name,
+            'dataset': world.dataset,
+            'topks': world.topks
+        },
+        'metrics': EPOCH_METRICS
+    }
+    
+    # Save with appropriate filename
+    if quantized:
+        filename = 'metrics_quantized.json'
+    else:
+        filename = 'metrics_original.json'
+    
+    with open(filename, 'w') as f:
+        json.dump(metrics_to_save, f, indent=2)
+    
+    print(f"\n{'='*50}")
+    print(f"Metrics saved to: {filename}")
+    print(f"{'='*50}")
+    
+    # Print summary
+    if EPOCH_METRICS['epoch_times']:
+        print(f"\nTraining Summary:")
+        print(f"  Mode: {'8-bit Quantized' if quantized else 'Float32 Original'}")
+        print(f"  Avg Epoch Time: {np.mean(EPOCH_METRICS['epoch_times']):.2f}s")
+        print(f"  Avg Batch Time: {np.mean(EPOCH_METRICS['batch_times']):.4f}s")
+        print(f"  Avg Memory: {np.mean(EPOCH_METRICS['memory_usage']):.1f}MB")
+        print(f"  Avg CPU: {np.mean(EPOCH_METRICS['cpu_usage']):.1f}%")
+        
+        if EPOCH_METRICS['recall']:
+            last_recall = EPOCH_METRICS['recall'][-1]
+            last_ndcg = EPOCH_METRICS['ndcg'][-1]
+            print(f"\n  Final Recall@{world.topks}: {last_recall}")
+            print(f"  Final NDCG@{world.topks}: {last_ndcg}")
+        
+        print(f"{'='*50}\n")

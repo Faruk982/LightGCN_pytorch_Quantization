@@ -7,6 +7,7 @@ from tensorboardX import SummaryWriter
 import time
 import Procedure
 from os.path import join
+import json
 # ==============================
 utils.set_seed(world.seed)
 print(">>SEED:", world.seed)
@@ -49,3 +50,6 @@ try:
 finally:
     if world.tensorboard:
         w.close()
+    
+    # Save performance metrics to JSON file
+    Procedure.save_metrics()
