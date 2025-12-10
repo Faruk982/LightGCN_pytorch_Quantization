@@ -43,7 +43,9 @@ try:
         start = time.time()
         if epoch %10 == 0:
             cprint("[TEST]")
-            Procedure.Test(dataset, Recmodel, epoch, w, world.config['multicore'])
+            results = Procedure.Test(dataset, Recmodel, epoch, w, world.config['multicore'])
+            # Print accuracy with performance metrics
+            print(f"[Recall@20:{results['recall'][0]:.6f}|Precision@20:{results['precision'][0]:.6f}|NDCG@20:{results['ndcg'][0]:.6f}]")
         output_information = Procedure.BPR_train_original(dataset, Recmodel, bpr, epoch, neg_k=Neg_k,w=w)
         print(f'EPOCH[{epoch+1}/{world.TRAIN_epochs}] {output_information}')
         torch.save(Recmodel.state_dict(), weight_file)
@@ -51,5 +53,14 @@ finally:
     if world.tensorboard:
         w.close()
     
-    # Save performance metrics to JSON file
-    Procedure.save_metrics()
+    # Print final summary
+    if Procedure.EPOCH_METRICS['epoch_times']:
+        quant_mode = world.config.get('quantization', False)
+        print(f"\n{'='*60}")
+        print(f"FINAL SUMMARY - {'QUANTIZED' if quant_mode else 'ORIGINAL'} MODE")
+        print(f"{'='*60}")
+        print(f"Avg Epoch Time:  {np.mean(Procedure.EPOCH_METRICS['epoch_times']):.2f}s")
+        print(f"Avg Batch Time:  {np.mean(Procedure.EPOCH_METRICS['batch_times']):.4f}s")
+        print(f"Avg Memory:      {np.mean(Procedure.EPOCH_METRICS['memory_usage']):.1f} MB")
+        print(f"Avg CPU:         {np.mean(Procedure.EPOCH_METRICS['cpu_usage']):.1f}%")
+        print(f"{'='*60}\n")
